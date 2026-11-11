@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+          cache-dependency-path: whatsapp-bridge/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: whatsapp-mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Server imports and exposes the read-only tools
+        run: uv run python -c "import main, asyncio; names=[t.name for t in asyncio.run(main.mcp.list_tools())]; print(names); assert 'list_chats' in names and 'send_message' not in names"
