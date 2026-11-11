@@ -1,7 +1,7 @@
 # WhatsApp MCP Server (hardened fork)
 
 > **Personal hardened fork.** Differences from upstream:
-> - The bridge REST API listens on `127.0.0.1:8080` only (`WHATSAPP_BRIDGE_ADDR`, loopback IPs only) and every request needs the token in `whatsapp-bridge/store/api_token`, generated on first run. Browser requests (`Origin` / `Sec-Fetch-Site`) and non-JSON bodies are rejected.
+> - The bridge REST API listens on a Unix socket, `whatsapp-bridge/store/bridge.sock` (mode 0600, inside the 0700 store), not on a TCP port, and every request needs the token in `whatsapp-bridge/store/api_token`, generated on first run. Browser requests (`Origin` / `Sec-Fetch-Site`) and non-JSON bodies are rejected.
 > - `send_file` / `send_audio_message` can only read files inside the outbox, `~/WhatsApp-outbox` by default (`WHATSAPP_OUTBOX_DIR`), after following symlinks.
 > - Names of incoming files and chat JIDs are sanitized before they are used as paths; downloads go to `whatsapp-bridge/store/media/`.
 > - Everything in `store/` is created with user-only permissions.

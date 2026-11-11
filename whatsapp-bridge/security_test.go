@@ -56,23 +56,6 @@ func TestResolveOutboxPath(t *testing.T) {
 	}
 }
 
-func TestBridgeAddr(t *testing.T) {
-	for addr, ok := range map[string]bool{
-		"":               true,
-		"127.0.0.1:9000": true,
-		"[::1]:8080":     true,
-		":8080":          false,
-		"0.0.0.0:8080":   false,
-		"localhost:8080": false,
-		"192.168.1.5:80": false,
-	} {
-		t.Setenv("WHATSAPP_BRIDGE_ADDR", addr)
-		if _, err := bridgeAddr(); (err == nil) != ok {
-			t.Errorf("bridgeAddr(%q) err = %v, want ok=%v", addr, err, ok)
-		}
-	}
-}
-
 func TestRequireAuth(t *testing.T) {
 	handler := requireAuth("secret-token", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -103,5 +86,28 @@ func TestRequireAuth(t *testing.T) {
 		if code := request(mutate); code == http.StatusOK {
 			t.Errorf("%s: request accepted", name)
 		}
+	}
+}
+
+func TestListenSocket(t *testing.T) {
+	t.Chdir(t.TempDir())
+	os.Mkdir("store", 0700)
+	os.WriteFile(socketFile, []byte("stale"), 0644)
+
+	listener, err := listenSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	info, err := os.Stat(socketFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Error("stale file was not replaced by a socket")
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("socket permissions = %o, want 600", perm)
 	}
 }

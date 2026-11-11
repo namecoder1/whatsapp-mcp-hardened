@@ -20,21 +20,24 @@ const tokenFile = "store/api_token"
 // Largest file /api/send will read from the outbox
 const maxMediaSize = 100 << 20
 
-// Address for the REST API. Only loopback addresses are accepted, so the API is never reachable from the LAN.
-func bridgeAddr() (string, error) {
-	addr := os.Getenv("WHATSAPP_BRIDGE_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:8080"
-	}
+// The REST API listens on a Unix socket inside the private store directory, so only the current user can
+// reach it and no other program can squat a TCP port and receive the token
+const socketFile = "store/bridge.sock"
 
-	host, _, err := net.SplitHostPort(addr)
+// Open the API socket. Must be called while holding the bridge lock, so a leftover socket file is stale.
+func listenSocket() (net.Listener, error) {
+	if err := os.Remove(socketFile); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to remove stale %s: %v", socketFile, err)
+	}
+	listener, err := net.Listen("unix", socketFile)
 	if err != nil {
-		return "", fmt.Errorf("invalid WHATSAPP_BRIDGE_ADDR %q: %v", addr, err)
+		return nil, fmt.Errorf("failed to listen on %s: %v", socketFile, err)
 	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return "", fmt.Errorf("WHATSAPP_BRIDGE_ADDR must be a loopback IP (e.g. 127.0.0.1:8080), got %q", addr)
+	if err := os.Chmod(socketFile, 0600); err != nil {
+		listener.Close()
+		return nil, fmt.Errorf("failed to restrict %s: %v", socketFile, err)
 	}
-	return addr, nil
+	return listener, nil
 }
 
 // Read the API token, generating a new random one (mode 0600) on first run

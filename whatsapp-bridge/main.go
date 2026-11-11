@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -691,7 +692,7 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, guard *SendGuard, addr, token, outbox string) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, guard *SendGuard, listener net.Listener, token, outbox string) {
 	// Handler for sending messages
 	http.HandleFunc("/api/status", requireAuth(token, statusHandler(client)))
 
@@ -792,11 +793,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, guard
 	}))
 
 	// Start the server
-	fmt.Printf("Starting REST API server on %s (outbox: %s)...\n", addr, outbox)
+	fmt.Printf("Starting REST API server on %s (outbox: %s)...\n", listener.Addr(), outbox)
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
-		if err := http.ListenAndServe(addr, nil); err != nil {
+		if err := http.Serve(listener, nil); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -814,11 +815,6 @@ func main() {
 	restrictFilePermissions()
 
 	// Validate REST API settings before touching WhatsApp
-	addr, err := bridgeAddr()
-	if err != nil {
-		logger.Errorf("%v", err)
-		return
-	}
 	outbox, err := outboxDir()
 	if err != nil {
 		logger.Errorf("%v", err)
@@ -851,6 +847,13 @@ func main() {
 		logger.Errorf("%v", err)
 		return
 	}
+
+	listener, err := listenSocket()
+	if err != nil {
+		logger.Errorf("%v", err)
+		return
+	}
+	defer os.Remove(socketFile)
 
 	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
@@ -989,7 +992,7 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	startRESTServer(client, messageStore, guard, addr, token, outbox)
+	startRESTServer(client, messageStore, guard, listener, token, outbox)
 
 	// Idle timeout and exit-with-parent, for on-demand starts by the MCP server
 	if err := watchLifetime(stopChan); err != nil {

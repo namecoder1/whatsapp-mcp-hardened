@@ -8,26 +8,33 @@ import sys
 from functools import partial
 import requests
 import json
+import http.client
 import audio
+import bridge
 
 BRIDGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge')
 MESSAGES_DB_PATH = os.path.join(BRIDGE_DIR, 'store', 'messages.db')
-API_TOKEN_PATH = os.path.join(BRIDGE_DIR, 'store', 'api_token')
-WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://127.0.0.1:8080/api")
 # Only files in here can be sent; the bridge enforces the same rule
 OUTBOX_DIR = os.path.realpath(os.path.expanduser(os.environ.get("WHATSAPP_OUTBOX_DIR", "~/WhatsApp-outbox")))
 
 # stdout is the MCP stdio channel, so diagnostics must go to stderr
 log = partial(print, file=sys.stderr)
 
-def _post(url: str, payload: dict) -> requests.Response:
-    """POST to the bridge with the shared API token."""
+class _Response:
+    """Minimal stand-in for requests.Response for bridge API calls."""
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return json.loads(self.text)
+
+def _post(path: str, payload: dict) -> _Response:
+    """POST to the bridge API over its Unix socket, with the shared API token."""
     try:
-        with open(API_TOKEN_PATH) as f:
-            token = f.read().strip()
-    except FileNotFoundError:
-        raise RuntimeError(f"Bridge API token not found at {API_TOKEN_PATH}: start the WhatsApp bridge first")
-    return requests.post(url, json=payload, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        return _Response(*bridge.call(path, payload))
+    except (OSError, http.client.HTTPException) as e:
+        raise requests.RequestException(f"WhatsApp bridge is not reachable ({e})")
 
 def _outbox_path(media_path: str) -> str:
     """Return the real path of media_path, which must be a file inside the outbox."""
@@ -656,7 +663,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
         if not recipient:
             return False, "Recipient must be provided"
         
-        url = f"{WHATSAPP_API_BASE_URL}/send"
+        url = "send"
         payload = {
             "recipient": recipient,
             "message": message,
@@ -671,7 +678,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, bridge.BridgeUnavailable) as e:
         return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
@@ -691,7 +698,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         
         media_path = _outbox_path(media_path)
         
-        url = f"{WHATSAPP_API_BASE_URL}/send"
+        url = "send"
         payload = {
             "recipient": recipient,
             "media_path": media_path
@@ -706,7 +713,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, bridge.BridgeUnavailable) as e:
         return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
@@ -735,7 +742,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             except Exception as e:
                 return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
 
-        url = f"{WHATSAPP_API_BASE_URL}/send"
+        url = "send"
         payload = {
             "recipient": recipient,
             "media_path": media_path
@@ -754,7 +761,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, bridge.BridgeUnavailable) as e:
         return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
@@ -774,7 +781,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         The local file path if download was successful, None otherwise
     """
     try:
-        url = f"{WHATSAPP_API_BASE_URL}/download"
+        url = "download"
         payload = {
             "message_id": message_id,
             "chat_jid": chat_jid
