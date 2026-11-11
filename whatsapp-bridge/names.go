@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"unicode"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
@@ -25,14 +26,46 @@ func lookupContactName(client *whatsmeow.Client, jid types.JID) string {
 		if err != nil || !contact.Found {
 			continue
 		}
-		// Prefer the name saved in your address book, then the name they set themselves
-		for _, name := range []string{contact.FullName, contact.FirstName, contact.BusinessName, contact.PushName} {
-			if name = strings.TrimSpace(name); name != "" {
+		// Names saved in your address book are trusted
+		for _, name := range []string{contact.FullName, contact.FirstName} {
+			if name = cleanName(name); name != "" {
 				return name
+			}
+		}
+		// Names the other person chose themselves are marked so they can't pass for a saved contact
+		for _, name := range []string{contact.BusinessName, contact.PushName} {
+			if name = cleanName(name); name != "" {
+				return selfChosenPrefix + name
 			}
 		}
 	}
 	return ""
+}
+
+// Marks a name the other person chose, as in WhatsApp's own "~Name" display
+const selfChosenPrefix = "~"
+
+// Strip control characters and newlines and cap the length, since names end up in the LLM context
+func cleanName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) && r != '‍' {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(strings.Join(strings.Fields(name), " "))
+	if runes := []rune(name); len(runes) > 60 {
+		name = string(runes[:60])
+	}
+	return name
+}
+
+// Whether a stored chat name should be looked up again (bare ID or a self-chosen name)
+func needsNameLookup(name string, jid types.JID) bool {
+	return name == "" || name == jid.User || strings.HasPrefix(name, selfChosenPrefix)
 }
 
 // Rename direct chats that only have their bare ID as a name, now that more contacts or LID mappings may be known
@@ -50,10 +83,10 @@ func backfillChatNames(client *whatsmeow.Client, messageStore *MessageStore, log
 			continue
 		}
 		jid, err := types.ParseJID(chatJID)
-		if err != nil || (name != "" && name != jid.User) {
+		if err != nil || !needsNameLookup(name, jid) {
 			continue
 		}
-		if contactName := lookupContactName(client, jid); contactName != "" {
+		if contactName := lookupContactName(client, jid); contactName != "" && contactName != name {
 			updates[chatJID] = contactName
 		}
 	}

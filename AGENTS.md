@@ -45,6 +45,7 @@ WhatsApp bans unofficial clients that behave like bots. The defaults are deliber
 
 - `SendGuard` allows 10 sends per hour, 30s apart (`WHATSAPP_SEND_PER_HOUR`, `WHATSAPP_SEND_MIN_INTERVAL`). Send times are stored in the `api_sends` table, so the limits survive restarts.
 - Sends only go to chats where the other person has already written, checking both the phone-number JID and the LID, or to your own number. Groups are blocked unless `WHATSAPP_ALLOW_GROUPS=1`. Never add bulk sends, broadcasts, group creation, or first contact with strangers.
+- Chat names from your address book are used as-is; names the other person chose (push/business name) are prefixed with `~`, stripped of control characters and capped at 60 characters (`cleanName` in `names.go`). Never present a self-chosen name as a saved contact.
 - `restrictionReason` handles temp bans, reach-out timelocks, and locked/banned logouts. On a restriction the bridge writes `store/ACCOUNT_RESTRICTED`, exits with code 3, and refuses to start until a human deletes the file. Never auto-delete the marker, auto-restart or auto-re-pair after a restriction.
 
 ## Conventions

@@ -1005,8 +1005,8 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	// First, check if chat already exists in database with a name
 	var existingName string
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
-	// A name equal to the bare JID user is a placeholder from an earlier failed lookup, so try again
-	if err == nil && existingName != "" && existingName != jid.User {
+	// Bare IDs and self-chosen names are looked up again, in case the contact is now known
+	if err == nil && !needsNameLookup(existingName, jid) {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
