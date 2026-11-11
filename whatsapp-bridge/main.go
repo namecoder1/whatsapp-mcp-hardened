@@ -905,9 +905,15 @@ func main() {
 		case *events.HistorySync:
 			// Process history sync events
 			handleHistorySync(client, messageStore, v, logger)
+			backfillChatNames(client, messageStore, logger)
+
+		case *events.AppStateSyncComplete:
+			// Address book contacts arrive through app state sync
+			backfillChatNames(client, messageStore, logger)
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			go backfillChatNames(client, messageStore, logger)
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
@@ -999,7 +1005,8 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	// First, check if chat already exists in database with a name
 	var existingName string
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
-	if err == nil && existingName != "" {
+	// A name equal to the bare JID user is a placeholder from an earlier failed lookup, so try again
+	if err == nil && existingName != "" && existingName != jid.User {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
@@ -1059,10 +1066,8 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		// This is an individual contact
 		logger.Infof("Getting name for contact: %s", chatJID)
 
-		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
-		if err == nil && contact.FullName != "" {
-			name = contact.FullName
+		if contactName := lookupContactName(client, jid); contactName != "" {
+			name = contactName
 		} else if sender != "" {
 			// Fallback to sender
 			name = sender
