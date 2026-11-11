@@ -1,4 +1,12 @@
-# WhatsApp MCP Server
+# WhatsApp MCP Server (hardened fork)
+
+> **Personal hardened fork.** Differences from upstream:
+> - The bridge REST API listens on `127.0.0.1:8080` only (`WHATSAPP_BRIDGE_ADDR`, loopback IPs only) and every request needs the token in `whatsapp-bridge/store/api_token`, generated on first run. Browser requests (`Origin` / `Sec-Fetch-Site`) and non-JSON bodies are rejected.
+> - `send_file` / `send_audio_message` can only read files inside the outbox, `~/WhatsApp-outbox` by default (`WHATSAPP_OUTBOX_DIR`), after following symlinks.
+> - Names of incoming files and chat JIDs are sanitized before they are used as paths; downloads go to `whatsapp-bridge/store/media/`.
+> - Everything in `store/` is created with user-only permissions.
+> - Sending tools are hidden unless the MCP server runs with `WHATSAPP_ALLOW_SEND=1`.
+> - MCP server logs go to stderr (stdout is the MCP channel), and whatsmeow is updated to a current version.
 
 This is a Model Context Protocol (MCP) server for WhatsApp.
 
@@ -49,6 +57,15 @@ Here's an example of what you can do when it's connected to Claude.
 3. **Connect to the MCP server**
 
    Copy the below json with the appropriate {{PATH}} values:
+
+   For **Claude Code**:
+
+   ```bash
+   claude mcp add whatsapp --scope user -- {{PATH_TO_UV}} --directory {{PATH_TO_SRC}}/whatsapp-mcp/whatsapp-mcp-server run main.py
+   # add `-e WHATSAPP_ALLOW_SEND=1` before `--` to expose the sending tools
+   ```
+
+   For Claude Desktop / Cursor:
 
    ```json
    {

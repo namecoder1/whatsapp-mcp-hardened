@@ -2,13 +2,41 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+import os
 import os.path
+import sys
+from functools import partial
 import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+BRIDGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge')
+MESSAGES_DB_PATH = os.path.join(BRIDGE_DIR, 'store', 'messages.db')
+API_TOKEN_PATH = os.path.join(BRIDGE_DIR, 'store', 'api_token')
+WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://127.0.0.1:8080/api")
+# Only files in here can be sent; the bridge enforces the same rule
+OUTBOX_DIR = os.path.realpath(os.path.expanduser(os.environ.get("WHATSAPP_OUTBOX_DIR", "~/WhatsApp-outbox")))
+
+# stdout is the MCP stdio channel, so diagnostics must go to stderr
+log = partial(print, file=sys.stderr)
+
+def _post(url: str, payload: dict) -> requests.Response:
+    """POST to the bridge with the shared API token."""
+    try:
+        with open(API_TOKEN_PATH) as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"Bridge API token not found at {API_TOKEN_PATH}: start the WhatsApp bridge first")
+    return requests.post(url, json=payload, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+
+def _outbox_path(media_path: str) -> str:
+    """Return the real path of media_path, which must be a file inside the outbox."""
+    real = os.path.realpath(os.path.expanduser(media_path))
+    if real == OUTBOX_DIR or os.path.commonpath([real, OUTBOX_DIR]) != OUTBOX_DIR:
+        raise ValueError(f"Media files must be inside {OUTBOX_DIR}: copy the file there first")
+    if not os.path.isfile(real):
+        raise ValueError(f"Media file not found: {media_path}")
+    return real
 
 @dataclass
 class Message:
@@ -85,7 +113,7 @@ def get_sender_name(sender_jid: str) -> str:
             return sender_jid
         
     except sqlite3.Error as e:
-        print(f"Database error while getting sender name: {e}")
+        log(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
         if 'conn' in locals():
@@ -108,7 +136,7 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     except Exception as e:
-        print(f"Error formatting message: {e}")
+        log(f"Error formatting message: {e}")
     return output
 
 def format_messages_list(messages: List[Message], show_chat_info: bool = True) -> None:
@@ -216,7 +244,7 @@ def list_messages(
         return format_messages_list(result, show_chat_info=True)    
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -309,7 +337,7 @@ def get_message_context(
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         raise
     finally:
         if 'conn' in locals():
@@ -383,7 +411,7 @@ def list_chats(
         return result
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -425,7 +453,7 @@ def search_contacts(query: str) -> List[Contact]:
         return result
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -476,7 +504,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         return result
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -525,7 +553,7 @@ def get_last_interaction(jid: str) -> str:
         return format_message(message)
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -573,7 +601,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -616,7 +644,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        log(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -634,7 +662,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
         
-        response = requests.post(url, json=payload)
+        response = _post(url, payload)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -643,6 +671,8 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    except (ValueError, RuntimeError) as e:
+        return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -659,8 +689,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         if not media_path:
             return False, "Media path must be provided"
         
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+        media_path = _outbox_path(media_path)
         
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -668,7 +697,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = _post(url, payload)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -677,6 +706,8 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    except (ValueError, RuntimeError) as e:
+        return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -693,23 +724,29 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         if not media_path:
             return False, "Media path must be provided"
         
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+        media_path = _outbox_path(media_path)
+        converted_path = None
 
         if not media_path.endswith(".ogg"):
             try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
+                # Converted file goes in the outbox so the bridge accepts it
+                converted_path = audio.convert_to_opus_ogg_temp(media_path, dir=OUTBOX_DIR)
+                media_path = converted_path
             except Exception as e:
                 return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
-        
+
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
             "recipient": recipient,
             "media_path": media_path
         }
-        
-        response = requests.post(url, json=payload)
-        
+
+        try:
+            response = _post(url, payload)
+        finally:
+            if converted_path and os.path.exists(converted_path):
+                os.unlink(converted_path)
+
         # Check if the request was successful
         if response.status_code == 200:
             result = response.json()
@@ -717,6 +754,8 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    except (ValueError, RuntimeError) as e:
+        return False, str(e)
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -741,27 +780,27 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload)
+        response = _post(url, payload)
         
         if response.status_code == 200:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
+                log(f"Media downloaded successfully: {path}")
                 return path
             else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
+                log(f"Download failed: {result.get('message', 'Unknown error')}")
                 return None
         else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            log(f"Error: HTTP {response.status_code} - {response.text}")
             return None
             
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
+        log(f"Request error: {str(e)}")
         return None
     except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
+        log(f"Error parsing response: {response.text}")
         return None
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        log(f"Unexpected error: {str(e)}")
         return None
