@@ -63,12 +63,8 @@ func cleanName(name string) string {
 	return name
 }
 
-// Whether a stored chat name should be looked up again (bare ID or a self-chosen name)
-func needsNameLookup(name string, jid types.JID) bool {
-	return name == "" || name == jid.User || strings.HasPrefix(name, selfChosenPrefix)
-}
-
-// Rename direct chats that only have their bare ID as a name, now that more contacts or LID mappings may be known
+// Recompute every direct chat name from the current address book. Stored names are never trusted, so names
+// saved by older versions or contacts removed from the address book cannot keep an unmarked name.
 func backfillChatNames(client *whatsmeow.Client, messageStore *MessageStore, logger waLog.Logger) {
 	rows, err := messageStore.db.Query("SELECT jid, name FROM chats WHERE jid NOT LIKE '%@g.us'")
 	if err != nil {
@@ -83,11 +79,15 @@ func backfillChatNames(client *whatsmeow.Client, messageStore *MessageStore, log
 			continue
 		}
 		jid, err := types.ParseJID(chatJID)
-		if err != nil || !needsNameLookup(name, jid) {
+		if err != nil {
 			continue
 		}
-		if contactName := lookupContactName(client, jid); contactName != "" && contactName != name {
-			updates[chatJID] = contactName
+		resolved := lookupContactName(client, jid)
+		if resolved == "" {
+			resolved = jid.User
+		}
+		if resolved != name {
+			updates[chatJID] = resolved
 		}
 	}
 	rows.Close()

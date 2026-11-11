@@ -1005,8 +1005,8 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	// First, check if chat already exists in database with a name
 	var existingName string
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
-	// Bare IDs and self-chosen names are looked up again, in case the contact is now known
-	if err == nil && !needsNameLookup(existingName, jid) {
+	// Group names come from WhatsApp; direct chat names are always recomputed from the current address book
+	if err == nil && existingName != "" && jid.Server == types.GroupServer {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
