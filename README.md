@@ -6,6 +6,8 @@
 > - Names of incoming files and chat JIDs are sanitized before they are used as paths; downloads go to `whatsapp-bridge/store/media/`.
 > - Everything in `store/` is created with user-only permissions.
 > - Sending tools are hidden unless the MCP server runs with `WHATSAPP_ALLOW_SEND=1`.
+> - Sends are rate limited by the bridge (default 10/hour and 30s apart: `WHATSAPP_SEND_PER_HOUR`, `WHATSAPP_SEND_MIN_INTERVAL`), only go to chats where the other person has already written (or to yourself), and never to groups unless `WHATSAPP_ALLOW_GROUPS=1`.
+> - On a temporary ban, messaging restriction, or locked/banned logout the bridge writes `whatsapp-bridge/store/ACCOUNT_RESTRICTED`, stops with exit code 3, and refuses to start (or show a QR code) until you delete that file.
 > - MCP server logs go to stderr (stdout is the MCP channel), and whatsmeow is updated to a current version.
 
 This is a Model Context Protocol (MCP) server for WhatsApp.

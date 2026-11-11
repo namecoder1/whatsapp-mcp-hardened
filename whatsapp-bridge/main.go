@@ -203,7 +203,7 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, outbox string, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, guard *SendGuard, outbox string, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -224,11 +224,19 @@ func sendWhatsAppMessage(client *whatsmeow.Client, outbox string, recipient stri
 	} else {
 		// Create JID from phone number
 		recipientJID = types.JID{
-			User:   recipient,
+			User:   strings.TrimPrefix(recipient, "+"),
 			Server: "s.whatsapp.net", // For personal chats
 		}
 	}
 
+	return guard.Do(client, recipientJID, func() (bool, string) {
+		return sendToJID(client, outbox, recipientJID, message, mediaPath)
+	})
+}
+
+// Build, upload and send a message once the send guard has allowed it
+func sendToJID(client *whatsmeow.Client, outbox string, recipientJID types.JID, message string, mediaPath string) (bool, string) {
+	var err error
 	msg := &waProto.Message{}
 
 	// Check if we have media to send
@@ -374,7 +382,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, outbox string, recipient stri
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient)
+	return true, fmt.Sprintf("Message sent to %s", recipientJID)
 }
 
 // Extract media info from a message
@@ -683,7 +691,7 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, addr, token, outbox string) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, guard *SendGuard, addr, token, outbox string) {
 	// Handler for sending messages
 	http.HandleFunc("/api/send", requireAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -713,7 +721,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, addr,
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, outbox, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, guard, outbox, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -821,6 +829,12 @@ func main() {
 		return
 	}
 
+	// Never reconnect (or show a new QR code) after WhatsApp restricted the account
+	if marker, restricted := readRestrictionMarker(); restricted {
+		fmt.Printf("\n⚠️  Refusing to start: a previous run recorded an account restriction (%s):\n\n%s\n", restrictionMarkerFile, marker)
+		os.Exit(exitRestricted)
+	}
+
 	token, err := loadOrCreateToken()
 	if err != nil {
 		logger.Errorf("%v", err)
@@ -861,8 +875,28 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	guard, err := NewSendGuard(messageStore.db)
+	if err != nil {
+		logger.Errorf("Failed to set up send limits: %v", err)
+		return
+	}
+
+	// Receives a reason when the bridge must stop because of the account's state
+	stopChan := make(chan string, 1)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
+		if reason, restricted := restrictionReason(evt); reason != "" {
+			if restricted {
+				writeRestrictionMarker(reason)
+				reason = "RESTRICTED: " + reason
+			}
+			select {
+			case stopChan <- reason:
+			default:
+			}
+		}
+
 		switch v := evt.(type) {
 		case *events.Message:
 			// Process regular messages
@@ -933,20 +967,31 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	startRESTServer(client, messageStore, addr, token, outbox)
+	startRESTServer(client, messageStore, guard, addr, token, outbox)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
 
-	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
+	fmt.Printf("REST server is running (max %d sends/hour, %s between sends). Press Ctrl+C to disconnect and exit.\n", guard.perHour, guard.minInterval)
 
-	// Wait for termination signal
-	<-exitChan
+	// Wait for termination signal or an account problem
+	exitCode := 0
+	select {
+	case <-exitChan:
+	case reason := <-stopChan:
+		fmt.Printf("\n⚠️  Stopping: %s\n", reason)
+		if strings.HasPrefix(reason, "RESTRICTED: ") {
+			fmt.Printf("Unlink this device from WhatsApp on your phone and do not scan a new QR code for now. Details in %s.\n", restrictionMarkerFile)
+			exitCode = exitRestricted
+		}
+	}
 
 	fmt.Println("Disconnecting...")
 	// Disconnect client
 	client.Disconnect()
+	messageStore.Close()
+	os.Exit(exitCode)
 }
 
 // GetChatName determines the appropriate name for a chat based on JID and other info
