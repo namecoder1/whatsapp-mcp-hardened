@@ -92,3 +92,32 @@ func TestRestrictionReason(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchLifetimeSettings(t *testing.T) {
+	t.Setenv("WHATSAPP_IDLE_TIMEOUT", "15")
+	if err := watchLifetime(make(chan string, 1)); err == nil {
+		t.Error("idle timeout without unit accepted")
+	}
+	t.Setenv("WHATSAPP_IDLE_TIMEOUT", "50ms")
+	stop := make(chan string, 1)
+	lastActivity.Store(time.Now().Add(-time.Minute).Unix())
+	if err := watchLifetime(stop); err != nil {
+		t.Fatal(err)
+	}
+	lastActivity.Store(time.Now().Add(-time.Minute).Unix())
+	select {
+	case <-stop:
+	case <-time.After(7 * time.Second):
+		t.Error("idle bridge did not stop")
+	}
+}
+
+func TestAcquireLock(t *testing.T) {
+	path := t.TempDir() + "/lock"
+	if ok, err := acquireLock(path); !ok || err != nil {
+		t.Fatalf("first lock: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := acquireLockFromOtherProcess(t, path); ok {
+		t.Error("second lock acquired while the first is held")
+	}
+}

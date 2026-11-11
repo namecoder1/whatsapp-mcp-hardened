@@ -693,6 +693,8 @@ func extractDirectPathFromURL(url string) string {
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, guard *SendGuard, addr, token, outbox string) {
 	// Handler for sending messages
+	http.HandleFunc("/api/status", requireAuth(token, statusHandler(client)))
+
 	http.HandleFunc("/api/send", requireAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
@@ -835,6 +837,15 @@ func main() {
 		os.Exit(exitRestricted)
 	}
 
+	// Only one bridge may use the session at a time
+	if ok, err := acquireLock(lockFile); err != nil {
+		logger.Errorf("%v", err)
+		return
+	} else if !ok {
+		fmt.Printf("Another WhatsApp bridge is already running (%s is locked)\n", lockFile)
+		os.Exit(exitAlreadyRunning)
+	}
+
 	token, err := loadOrCreateToken()
 	if err != nil {
 		logger.Errorf("%v", err)
@@ -925,6 +936,11 @@ func main() {
 
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
+		if !pairingAllowed() {
+			fmt.Println("Not linked to WhatsApp yet: run the bridge in a terminal once to scan the QR code")
+			os.Exit(exitNotPaired)
+		}
+
 		// No ID stored, this is a new client, need to pair with phone
 		qrChan, _ := client.GetQRChannel(context.Background())
 		err = client.Connect()
@@ -974,6 +990,13 @@ func main() {
 
 	// Start REST API server
 	startRESTServer(client, messageStore, guard, addr, token, outbox)
+
+	// Idle timeout and exit-with-parent, for on-demand starts by the MCP server
+	if err := watchLifetime(stopChan); err != nil {
+		logger.Errorf("%v", err)
+		client.Disconnect()
+		return
+	}
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)

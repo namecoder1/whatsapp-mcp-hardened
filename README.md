@@ -8,6 +8,7 @@
 > - Sending tools are hidden unless the MCP server runs with `WHATSAPP_ALLOW_SEND=1`.
 > - Sends are rate limited by the bridge (default 10/hour and 30s apart: `WHATSAPP_SEND_PER_HOUR`, `WHATSAPP_SEND_MIN_INTERVAL`), only go to chats where the other person has already written (or to yourself), and never to groups unless `WHATSAPP_ALLOW_GROUPS=1`.
 > - On a temporary ban, messaging restriction, or locked/banned logout the bridge writes `whatsapp-bridge/store/ACCOUNT_RESTRICTED`, stops with exit code 3, and refuses to start (or show a QR code) until you delete that file.
+> - **On-demand bridge:** the MCP server starts the bridge the first time a WhatsApp tool is used, and it stops when the Claude session ends or after 15 minutes without requests (`WHATSAPP_IDLE_TIMEOUT`). It never shows a QR code: link it once with `go run .` in `whatsapp-bridge/`. A lock prevents two bridges from using the session at once. Set `WHATSAPP_AUTOSTART=0` to manage the bridge yourself. Logs: `whatsapp-bridge/store/bridge.log`.
 > - MCP server logs go to stderr (stdout is the MCP channel), and whatsmeow is updated to a current version.
 
 This is a Model Context Protocol (MCP) server for WhatsApp.

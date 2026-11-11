@@ -85,6 +85,7 @@ func requireAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		markActivity()
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		next(w, r)
 	}

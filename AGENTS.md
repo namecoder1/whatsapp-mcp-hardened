@@ -10,9 +10,12 @@ Two processes that share `whatsapp-bridge/store/`:
   - `main.go`: message store, history sync, send/download, REST handlers, startup.
   - `security.go`: loopback-only address, API token, auth middleware, outbox path checks, filename sanitizing.
   - `guard.go`: send rate limits and recipient rules (`SendGuard`), ban/restriction detection and the `store/ACCOUNT_RESTRICTED` marker.
+  - `lifecycle.go`: `/api/status`, idle timeout and exit-with-parent for on-demand starts, no-pairing mode, exit codes.
+  - `lock_*.go`: exclusive lock on `store/bridge.lock`, so only one bridge uses the session.
   - `umask_*.go`: user-only file permissions.
 - **`whatsapp-mcp-server/`** (Python, FastMCP, run with `uv`): a stdio MCP server started by Claude Code. It **reads `messages.db` directly** via SQLite and **calls the bridge REST API** to send messages and download media.
-  - `main.py`: tool definitions. Send tools are registered only with `WHATSAPP_ALLOW_SEND=1`.
+  - `main.py`: tool definitions, all wrapped with `@tool` so the bridge is started on demand. Send tools are registered only with `WHATSAPP_ALLOW_SEND=1`.
+  - `bridge.py`: on-demand bridge start. It builds `whatsapp-bridge/bin/whatsapp-bridge` if stale, spawns it with `WHATSAPP_NO_PAIRING=1`, `WHATSAPP_EXIT_WITH_PARENT=1` and a 15m idle timeout, logs to `store/bridge.log`, and stops it on exit. Bridge exit codes: 3 restricted, 4 not paired, 5 already running.
   - `whatsapp.py`: SQLite queries and bridge calls (`_post` adds the token, `_outbox_path` checks paths).
   - `audio.py`: ffmpeg conversion to Opus for voice messages.
 
@@ -27,6 +30,10 @@ cd whatsapp-mcp-server && uv run python -c "import main, asyncio; print([t.name 
 ```
 
 Run the bridge with `go run .`, not `go run main.go`: the package has several files.
+
+## Bridge lifecycle
+
+Normally the bridge is not started by hand: the MCP server starts it when a WhatsApp tool is first used. Pairing (QR code) is the only step that needs a terminal: `cd whatsapp-bridge && go run .`. An on-demand start must never show a QR code, and the bridge's stdout/stderr must never be inherited by the MCP server (its stdout is the protocol channel).
 
 ## Security invariants (do not weaken)
 
@@ -46,7 +53,7 @@ WhatsApp bans unofficial clients that behave like bots. The defaults are deliber
 - `SendGuard` allows 10 sends per hour, 30s apart (`WHATSAPP_SEND_PER_HOUR`, `WHATSAPP_SEND_MIN_INTERVAL`). Send times are stored in the `api_sends` table, so the limits survive restarts.
 - Sends only go to chats where the other person has already written, checking both the phone-number JID and the LID, or to your own number. Groups are blocked unless `WHATSAPP_ALLOW_GROUPS=1`. Never add bulk sends, broadcasts, group creation, or first contact with strangers.
 - Chat names from your address book are used as-is; names the other person chose (push/business name) are prefixed with `~`, stripped of control characters and capped at 60 characters (`cleanName` in `names.go`). Never present a self-chosen name as a saved contact.
-- `restrictionReason` handles temp bans, reach-out timelocks, and locked/banned logouts. On a restriction the bridge writes `store/ACCOUNT_RESTRICTED`, exits with code 3, and refuses to start until a human deletes the file. Never auto-delete the marker, auto-restart or auto-re-pair after a restriction.
+- `restrictionReason` handles temp bans, reach-out timelocks, and locked/banned logouts. On a restriction the bridge writes `store/ACCOUNT_RESTRICTED`, exits with code 3, and refuses to start until a human deletes the file. Never auto-delete the marker, auto-restart or auto-re-pair after a restriction. `bridge.py` also refuses to start the bridge while the marker exists.
 
 ## Conventions
 
